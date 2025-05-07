@@ -1,43 +1,46 @@
 
 import streamlit as st
 import pandas as pd
-from io import BytesIO
+from openpyxl import Workbook
+import re
 
-st.title("📊 Excel Generator App")
+st.title("Excel Generator App")
 
 report_file = st.file_uploader("Upload report.xlsx", type=["xlsx"])
 statement_file = st.file_uploader("Upload statement.xlsx", type=["xlsx"])
 
 if report_file and statement_file:
-    try:
-        report_file.seek(0)
-        statement_file.seek(0)
+    purchases_df = pd.read_excel(report_file, sheet_name='Grid')
+    bank_df = pd.read_excel(statement_file)
 
-        report_df = pd.read_excel(report_file)
-        statement_df = pd.read_excel(statement_file)
+    purchases_df['დასახელება'] = purchases_df['გამყიდველი'].astype(str).apply(lambda x: re.sub(r'^\(\d+\)\s*', '', x).strip())
+    purchases_df['საიდენტიფიკაციო კოდი'] = purchases_df['გამყიდველი'].apply(lambda x: ''.join(re.findall(r'\d', str(x)))[:11])
 
-        st.success("✅ Files uploaded!")
-        st.subheader("Report Preview")
-        st.dataframe(report_df.head())
+    bank_df['P'] = bank_df.iloc[:, 15].astype(str).str.strip()
+    bank_df['Amount'] = pd.to_numeric(bank_df.iloc[:, 3], errors='coerce').fillna(0)
 
-        st.subheader("Statement Preview")
-        st.dataframe(statement_df.head())
+    st.success("Files uploaded!")
+    st.write("Report Preview", purchases_df.head())
+    st.write("Statement Preview", bank_df.head())
 
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            report_df.to_excel(writer, sheet_name='Report', index=False)
-            statement_df.to_excel(writer, sheet_name='Statement', index=False)
+    if st.button("Generate Final File"):
+        wb = Workbook()
+        wb.remove(wb.active)
 
-        st.success("✅ Final file generated!")
+        ws1 = wb.create_sheet(title="ანგარიშფაქტურები კომპანიით")
+        ws1.append(['დასახელება', 'საიდენტიფიკაციო კოდი', 'ანგარიშფაქტურის №', 'ანგარიშფაქტურის თანხა', 'ჩარიცხული თანხა'])
 
-        st.download_button(
-            label="⬇️ Download Final Excel",
-            data=output.getvalue(),
-            file_name="final_file.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+        for company_id, group in purchases_df.groupby('საიდენტიფიკაციო კოდი'):
+            company_name = group['დასახელება'].iloc[0]
+            start_row = ws1.max_row + 1
+            unique_invoices = group.groupby('სერია №')['ღირებულება დღგ და აქციზის ჩათვლით'].sum().reset_index()
+            company_invoice_sum = unique_invoices['ღირებულება დღგ და აქციზის ჩათვლით'].sum()
+            payment_formula = f"=SUMIF(საბანკოამონაწერი!P:P, B{start_row}, საბანკოამონაწერი!D:D)"
 
-    except Exception as e:
-        st.error(f"❌ Error: {e}")
-else:
-    st.warning("Please upload both Excel files.")
+            ws1.append([company_name, company_id, '', company_invoice_sum, payment_formula])
+            for _, row in unique_invoices.iterrows():
+                ws1.append(['', '', row['სერია №'], row['ღირებულება დღგ და აქციზის ჩათვლით'], ''])
+
+        output_path = '/mnt/data/final_file.xlsx'
+        wb.save(output_path)
+        st.success(f"✅ Final file generated! [Download here](final_file.xlsx)")
